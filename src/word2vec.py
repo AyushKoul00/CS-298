@@ -1,106 +1,138 @@
-# %%
+#!/usr/bin/env python3
+"""
+Train Word2Vec models for malware opcode sequences and compute mean embeddings per file.
+"""
+
 import os
+import pickle
+from pathlib import Path
+from multiprocessing import cpu_count
+from typing import Dict, List, Tuple
+
 import numpy as np
 from gensim.models import Word2Vec
-import pickle
-from typing import Any, Dict, Iterator, List, Optional, Tuple
-from multiprocessing import cpu_count
-from pathlib import Path
 
-# %%
-# Define variables
-MALWARE_DIR = Path('../malware_data/v077_clean/')  # Directory containing malware type folders
-SAVED_MODELS_DIR = Path(f'../saved_models/word2vec/')
-os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
-MALWARE_TYPES = ['Winwebsec', 'Small', 'Zbot']  # Malware type folder names
-MAX_SAMPLES_PER_TYPE = [500] * len(MALWARE_TYPES) # Set to -1 to read all files, or set to maximum number of files per folder
-EMBEDDING_SIZE = 128        # Dimension of the embeddings (vectors)
+# Constants and configuration
+MALWARE_DIR = Path("../dataset/")  # Directory containing malware type folders
+SAVED_MODELS_DIR = Path("../saved_models/word2vec/")
+SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Each subfolder in MALWARE_DIR is a malware type
+MALWARE_TYPES = [folder for folder in MALWARE_DIR.iterdir() if folder.is_dir()]
+# Set to -1 to read all files, or set a maximum number of files per folder
+MAX_SAMPLES_PER_TYPE = [-1] * len(MALWARE_TYPES)
+EMBEDDING_SIZE = 128  # Dimension of the embeddings (vectors)
 NUM_CORES = cpu_count()
 
-# %%
-# Dictionary to store embeddings per file
-MEAN_EMBEDDING_PER_FILE: Dict[Path, np.ndarray] = {}
 
-# Process each malware type
-for malware_type, max_samples in zip(MALWARE_TYPES, MAX_SAMPLES_PER_TYPE):
-    curr_dir = MALWARE_DIR / malware_type
-    if not curr_dir.is_dir():
-        continue  # Skip if the directory doesn't exist
+def build_corpus(filepaths: List[Path]) -> List[List[str]]:
+    """
+    Build a corpus from the given filepaths.
+    Each file is read and converted into a list of opcodes.
 
-    # Convert to a list so we can reuse it
-    filepaths = list(curr_dir.glob('*.txt'))
+    Args:
+        filepaths (List[Path]): List of file paths to process.
 
-    # Optionally limit the number of samples
-    if max_samples > 0 and max_samples < len(filepaths):
+    Returns:
+        List[List[str]]: A list of opcode lists.
+    """
+    corpus = []
+    for filepath in filepaths:
+        with filepath.open("r") as file:
+            opcodes = [l.strip() for line in file if (l := line.strip())]
+            corpus.append(opcodes)
+    return corpus
+
+
+def process_malware_type(
+    malware_dir: Path, max_samples: int
+) -> Tuple[Word2Vec, List[Path], List[List[str]]]:
+    """
+    Process a malware type folder:
+        - Read opcode files.
+        - Build corpus.
+        - Train a Word2Vec model.
+
+    Args:
+        malware_dir (Path): Path to the malware type folder.
+        max_samples (int): Maximum number of samples to process (-1 for all).
+
+    Returns:
+        Tuple[Word2Vec, List[Path], List[List[str]]]:
+            The trained Word2Vec model, list of processed filepaths, and the corpus.
+    """
+    filepaths = list(malware_dir.glob("*.txt"))
+    if 0 <= max_samples < len(filepaths):
         filepaths = filepaths[:max_samples]
 
-    # Build the corpus (list of opcode lists)
-    corpus: List[List[str]] = []
-    for filepath in filepaths:
-        with filepath.open('r') as f:
-            # Collect non-empty lines (opcodes)
-            opcodes = [l for line in f if (l := line.strip())]
-            corpus.append(opcodes)
+    corpus = build_corpus(filepaths)
 
-    # Train a Word2Vec model for the current malware family
     model = Word2Vec(
         sentences=corpus,
-        vector_size=EMBEDDING_SIZE,  # Embedding size
-        window=5,                    # Context window size
-        min_count=1,                 # Minimum frequency for a word to be included
-        workers=NUM_CORES - 1        # Number of worker threads
+        vector_size=EMBEDDING_SIZE,
+        window=5,
+        min_count=1,
+        workers=NUM_CORES,
     )
+    return model, filepaths, corpus
 
-    # Save the Word2Vec model for the current malware family
-    model_filename = SAVED_MODELS_DIR / f'{malware_type}.model'
-    model.save(str(model_filename))
 
-    # Compute and store mean embeddings for each file
+def compute_mean_embeddings(
+    model: Word2Vec, filepaths: List[Path], corpus: List[List[str]], malware_type: str
+) -> Dict[Tuple[str, str], np.ndarray]:
+    """
+    Compute the mean embedding for each file in the corpus.
+
+    Args:
+        model (Word2Vec): Trained Word2Vec model.
+        filepaths (List[Path]): List of file paths.
+        corpus (List[List[str]]): List of opcode lists.
+        malware_type (str): The malware type (used as a key).
+
+    Returns:
+        Dict[Tuple[str, str], np.ndarray]: Dictionary with keys as (malware_type, filename)
+            and values as mean embeddings.
+    """
+    mean_embeddings = {}
     for filepath, opcodes in zip(filepaths, corpus):
-        # Only take opcodes that are actually in the model vocabulary
-        valid_embeddings = [model.wv[opcode] for opcode in opcodes if opcode in model.wv]
+        valid_embeddings = [
+            model.wv[opcode] for opcode in opcodes if opcode in model.wv
+        ]
         if valid_embeddings:
             mean_embedding = np.mean(valid_embeddings, axis=0)
-            MEAN_EMBEDDING_PER_FILE[(malware_type, filepath.name)] = mean_embedding
-
-# Save MEAN_EMBEDDING_PER_FILE to a pickle file
-with (SAVED_MODELS_DIR / 'mean_embedding_per_file.pkl').open('wb') as f:
-    pickle.dump(MEAN_EMBEDDING_PER_FILE, f)
-
-# %%
-def get_embedding(key: Tuple[str, str]) -> Optional[Any]:
-    """Return the stored mean embedding for a given file Path."""
-    global MEAN_EMBEDDING_PER_FILE
-    return MEAN_EMBEDDING_PER_FILE.get(key)
-
-def embeddings() -> Iterator[Any]:
-    """Yield embeddings for all (limited) files across malware types."""
-    for malware_type, max_samples in zip(MALWARE_TYPES, MAX_SAMPLES_PER_TYPE):
-        curr_dir = MALWARE_DIR / malware_type
-        if not curr_dir.is_dir():
-            continue
-        
-        filepaths = list(curr_dir.glob('*.txt'))
-        if max_samples > 0 and max_samples < len(filepaths):
-            filepaths = filepaths[:max_samples]
-
-        for filepath in filepaths:
-            yield get_embedding((malware_type, filepath.name))
-
-# %%
-# # Example usage: get a specific embedding
-# key = (MALWARE_TYPES[0], 'abc.txt')
-# embedding = get_embedding(key)
-# if embedding is not None:
-#     print("Embedding (first 5 elements):", embedding[:5])
-# else:
-#     print('No embedding found for', key)
-
-# # Example usage: iterate over all embeddings
-# for E in embeddings():
-#     if E is not None:
-#         print("Embedding snippet:", E[:5])
-#     else:
-#         print("No embedding for this file.")
+            mean_embeddings[(malware_type, filepath.name)] = mean_embedding
+    return mean_embeddings
 
 
+def main() -> None:
+    """
+    Main function to process malware types, train Word2Vec models,
+    compute mean embeddings, and save results.
+    """
+    all_mean_embeddings: Dict[Tuple[str, str], np.ndarray] = {}
+
+    for malware_dir, max_samples in zip(MALWARE_TYPES, MAX_SAMPLES_PER_TYPE):
+        malware_type = malware_dir.name
+        print(f"Processing malware type: {malware_type:<20}", end="\t", flush=True)
+
+        # Process the current malware folder
+        model, filepaths, corpus = process_malware_type(malware_dir, max_samples)
+
+        # Save the Word2Vec model
+        model_filename = SAVED_MODELS_DIR / f"{malware_type}.model"
+        model.save(str(model_filename))
+
+        # Compute and collect mean embeddings
+        mean_embeddings = compute_mean_embeddings(model, filepaths, corpus, malware_type)
+        all_mean_embeddings.update(mean_embeddings)
+        print("(Done).", flush=True)
+
+    # Save the mean embeddings to a pickle file
+    pickle_filepath = SAVED_MODELS_DIR / "mean_embedding_per_file.pkl"
+    with pickle_filepath.open("wb") as f:
+        pickle.dump(all_mean_embeddings, f)
+    print("Saved mean embeddings to pickle file.", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -144,3 +144,4 @@ cython_debug/
 # Project specific
 *.tar.gz
 dataset/
+saved_models/
