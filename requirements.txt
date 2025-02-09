@@ -4,3 +4,4 @@ scikit-learn
 matplotlib
 tensorflow
 gensim
+umap-learn
