@@ -1,51 +1,70 @@
 # %%
 import os
+import logging
+from pathlib import Path
+import pickle
+from typing import List, Dict, Tuple
+
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
-from pathlib import Path
-import pickle
+
+# Configure logging to write to a file with a standard format.
+logging.basicConfig(
+    filename="bert.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 # %%
-# Define variables
+
+# Constants and configuration
 BERT_MODEL_TYPE = 'distilbert'
-MALWARE_DIR = Path('../malware_data/v077_clean/')  # Directory containing malware type folders
-SAVED_MODELS_DIR = Path(f'../saved_models/{BERT_MODEL_TYPE}/')
-os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
-MALWARE_TYPES = ['Winwebsec', 'Small', 'Zbot']  # Malware type folder names
-MAX_SAMPLES_PER_TYPE = [500] * len(MALWARE_TYPES) # Set to -1 to read all files, or set to maximum number of files per folder
+MALWARE_DIR = Path("../dataset/")  # Directory containing malware type folders
+SAVED_MODELS_DIR = Path("../saved_models/word2vec/")
+SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Each subfolder in MALWARE_DIR is a malware type
+MALWARE_TYPES = [folder for folder in MALWARE_DIR.iterdir() if folder.is_dir()]
+# Set to -1 to read all files, or set a maximum number of files per folder
+MAX_SAMPLES_PER_TYPE = [-1] * len(MALWARE_TYPES)
 MAX_CHUNK_LENGTH = 512
 CHUNK_OVERLAP_PERCENTAGE = 0.2
 
 # %%
-def tokenize_and_chunk(opcodes, tokenizer, max_length=512, overlap_percent=0.1):
+def tokenize_and_chunk(
+    opcodes: List[str],
+    tokenizer,
+    max_length: int = 512,
+    overlap_percent: float = 0.1,
+):
     """
-    Tokenize all opcodes into subwords first, then split into chunks with overlap
-    
+    Tokenize all opcodes into subwords first, then split into chunks with overlap.
+
     Args:
-        opcodes (list): List of opcode strings
-        tokenizer: Hugging Face tokenizer
-        max_length (int): Maximum sequence length
-        overlap_percent (float): Overlap percentage between chunks
-    
+        opcodes (List[str]): List of opcode strings.
+        tokenizer: Hugging Face tokenizer.
+        max_length (int): Maximum sequence length.
+        overlap_percent (float): Overlap percentage between chunks.
+
     Returns:
         BatchEncoding: Contains input_ids, attention_mask, etc.
     """
-    # Tokenize all opcodes into subwords using list comprehension
+    # Tokenize all opcodes into subwords using list comprehension.
     all_tokens = [token for opcode in opcodes for token in tokenizer.tokenize(opcode)]
-
-    # Calculate chunking parameters
-    chunk_size = max_length - 2  # Account for [CLS] and [SEP]
+    
+    # Calculate chunking parameters.
+    chunk_size = max_length - 2  # Account for [CLS] and [SEP].
     step = max(1, int(chunk_size * (1 - overlap_percent)))
     
-    # Generate overlapping chunks using walrus operator
+    # Generate overlapping chunks using the walrus operator.
     token_chunks = []
     start_idx = 0
     while (current_chunk := all_tokens[start_idx:start_idx + chunk_size]):
         token_chunks.append(current_chunk)
         start_idx += step
 
-    # Convert token chunks to model inputs
+    # Convert token chunks to model inputs.
     return tokenizer(
         token_chunks,
         is_split_into_words=True,
@@ -56,93 +75,103 @@ def tokenize_and_chunk(opcodes, tokenizer, max_length=512, overlap_percent=0.1):
         add_special_tokens=True
     )
 
-def generate_malware_embeddings(model_name='bert-base-uncased', overlap_percent=0.1):
+def generate_malware_embeddings(model_name: str = 'bert-base-uncased', overlap_percent: float = 0.1) -> Dict[Tuple[str, str], np.ndarray]:
     """
-    Generate embeddings using BERT with overlapping token chunks
+    Generate embeddings using BERT with overlapping token chunks.
+
+    Args:
+        model_name (str): Pre-trained model name.
+        overlap_percent (float): Overlap percentage between token chunks.
+
+    Returns:
+        Dict[Tuple[str, str], np.ndarray]: Dictionary mapping (malware_type, filename) to its embedding.
     """
+    # Set device to CUDA if available, else CPU.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).eval()
+    model = AutoModel.from_pretrained(model_name).eval().to(device)
     embeddings = {}
 
-    # Process each malware type
+    # Process each malware type.
     for malware_type, max_samples in zip(MALWARE_TYPES, MAX_SAMPLES_PER_TYPE):
         curr_dir = MALWARE_DIR / malware_type
         if not curr_dir.is_dir():
-            print(f"Skipping {curr_dir} because it doesn't exist")
-            continue  # Skip if the directory doesn't exist
+            logging.warning(f"Skipping {curr_dir} because it doesn't exist.")
+            continue  # Skip if the directory doesn't exist.
         else:
-            print(f"Finding embeddings for {curr_dir}")
+            logging.info(f"Processing malware type in directory: {curr_dir}")
 
-        # Convert to a list so we can reuse it
+        # Get a list of file paths.
         filepaths = list(curr_dir.glob('*.txt'))
 
-        # Optionally limit the number of samples
+        # Optionally limit the number of samples.
         if max_samples > 0 and max_samples < len(filepaths):
             filepaths = filepaths[:max_samples]
 
         for filepath in filepaths:
-            # Read opcodes with walrus operator
-            with open(filepath, 'r', encoding='utf-8') as f:
+            # Read opcodes using a context manager.
+            with filepath.open('r', encoding='utf-8') as f:
                 opcodes = [l for line in f if (l := line.strip())]
 
-            # Tokenize and chunk with overlap
+            # Tokenize and chunk with overlap.
             encoded_chunks = tokenize_and_chunk(
                 opcodes=opcodes,
                 tokenizer=tokenizer,
                 max_length=MAX_CHUNK_LENGTH,
                 overlap_percent=overlap_percent
             )
+            
+            # Move inputs to the selected device.
+            encoded_chunks = {key: val.to(device) for key, val in encoded_chunks.items()}
 
-            # Process all chunks in batch with inference mode
+            # Process all chunks in a batch using inference mode.
             with torch.inference_mode():
                 outputs = model(**encoded_chunks)
 
-            # Calculate valid token mask
             input_ids = encoded_chunks['input_ids']
-            # print(input_ids.shape)
 
+            # Calculate valid token mask.
             valid_mask = (
                 (input_ids != tokenizer.cls_token_id) &
                 (input_ids != tokenizer.sep_token_id) &
                 (input_ids != tokenizer.pad_token_id)
             )
 
-            # # Mean Chunk Embeddings
-            # chunk_embeddings = [
-            #     outputs.last_hidden_state[i][mask].mean(dim=0).numpy()
-            #     for i, mask in enumerate(valid_mask)
-            #     if mask.any()
-            # ]
-
-            # CLS Chunk Embeddings
+            # Use CLS token embeddings from each chunk.
             chunk_embeddings = [
-                outputs.last_hidden_state[i][0].cpu().numpy()  # CLS token
+                outputs.last_hidden_state[i][0].cpu().numpy()  # CLS token embedding.
                 for i in range(input_ids.shape[0])
-                if valid_mask[i].any()  # Still filter empty chunks
+                if valid_mask[i].any()  # Filter empty chunks.
             ]
 
-            # Average across chunks (no normalization)
+            # Average across chunks (no normalization).
             file_embedding = np.mean(chunk_embeddings, axis=0) if chunk_embeddings \
                 else np.zeros(model.config.hidden_size)
             
             embeddings[(malware_type, filepath.name)] = file_embedding
+            logging.info(f"Generated embedding for file: {(malware_type, filepath.name)}")
 
     return embeddings
 
 # %%
-embeddings = generate_malware_embeddings(
-    model_name=f'{BERT_MODEL_TYPE}-base-uncased',
-    overlap_percent=CHUNK_OVERLAP_PERCENTAGE  # 20% overlap between token chunks
-)
+def main() -> None:
+    embeddings = generate_malware_embeddings(
+        model_name=f'{BERT_MODEL_TYPE}-base-uncased',
+        overlap_percent=CHUNK_OVERLAP_PERCENTAGE  # 20% overlap between token chunks.
+    )
 
-print(f"Generated embeddings for {len(embeddings)} files")
+    logging.info(f"Generated embeddings for {len(embeddings)} files.")
 
-for key, E in embeddings.items():
-    # print(f'{filename}:', E, sep="\n")
-    print(f'{key}: {E.shape}')
+    for key, E in embeddings.items():
+        logging.info(f'{key}: {E.shape}')
 
-# %%
-with (SAVED_MODELS_DIR / 'mean_embedding_per_file.pkl').open('wb') as f:
-    pickle.dump(embeddings, f)
+    # Save the embeddings to a pickle file.
+    output_path = SAVED_MODELS_DIR / 'mean_embedding_per_file.pkl'
+    with output_path.open('wb') as f:
+        pickle.dump(embeddings, f)
+    logging.info(f"Embeddings saved to {output_path}")
 
-
+if __name__ == '__main__':
+    main()

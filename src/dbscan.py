@@ -37,6 +37,11 @@ NORMALIZE_EMBEDDINGS: bool = True
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+fh = logging.FileHandler('dbscan.log')
+fh.setLevel(logging.DEBUG)
+logger.addHandler(fh)
 
 
 # --- Data Loading and Preprocessing ---
@@ -99,15 +104,15 @@ def print_cluster_composition(true_labels: np.ndarray, cluster_labels: np.ndarra
     logger.info("Estimated number of clusters: %d", n_clusters)
     logger.info("Number of noise points: %d", n_noise)
 
-    print("\nCluster composition:")
+    logger.info("\nCluster composition:")
     for cluster in unique_clusters:
         cluster_mask = cluster_labels == cluster
         cluster_name = f"Cluster {cluster}" if cluster != -1 else "Noise"
         types, counts = np.unique(true_labels[cluster_mask], return_counts=True)
         type_counts = dict(zip(types, counts))
-        print(f"\n{cluster_name}:")
+        logger.info(f"\n{cluster_name}:")
         for malware_type, count in type_counts.items():
-            print(f"  {malware_type}: {count} samples")
+            logger.info(f"  {malware_type}: {count} samples")
 
 
 # --- Dimensionality Reduction ---
