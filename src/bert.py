@@ -9,19 +9,11 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
 
-# Configure logging to write to a file with a standard format.
-logging.basicConfig(
-    filename="bert.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
 # %%
-
 # Constants and configuration
 BERT_MODEL_TYPE = 'distilbert'
 MALWARE_DIR = Path("../dataset/")  # Directory containing malware type folders
-SAVED_MODELS_DIR = Path("../saved_models/word2vec/")
+SAVED_MODELS_DIR = Path(f"../saved_models/{BERT_MODEL_TYPE}/")
 SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Each subfolder in MALWARE_DIR is a malware type
@@ -30,6 +22,16 @@ MALWARE_TYPES = [folder for folder in MALWARE_DIR.iterdir() if folder.is_dir()]
 MAX_SAMPLES_PER_TYPE = [-1] * len(MALWARE_TYPES)
 MAX_CHUNK_LENGTH = 512
 CHUNK_OVERLAP_PERCENTAGE = 0.2
+
+# Batch size for processing chunks during inference
+BATCH_SIZE = 16
+
+# Configure logging to write to a file with a standard format.
+logging.basicConfig(
+    filename=SAVED_MODELS_DIR / f"{BERT_MODEL_TYPE}.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 # %%
 def tokenize_and_chunk(
@@ -57,7 +59,7 @@ def tokenize_and_chunk(
     chunk_size = max_length - 2  # Account for [CLS] and [SEP].
     step = max(1, int(chunk_size * (1 - overlap_percent)))
     
-    # Generate overlapping chunks using the walrus operator.
+    # Generate overlapping chunks.
     token_chunks = []
     start_idx = 0
     while (current_chunk := all_tokens[start_idx:start_idx + chunk_size]):
@@ -99,7 +101,7 @@ def generate_malware_embeddings(model_name: str = 'bert-base-uncased', overlap_p
         curr_dir = MALWARE_DIR / malware_type
         if not curr_dir.is_dir():
             logging.warning(f"Skipping {curr_dir} because it doesn't exist.")
-            continue  # Skip if the directory doesn't exist.
+            continue
         else:
             logging.info(f"Processing malware type in directory: {curr_dir}")
 
@@ -125,33 +127,36 @@ def generate_malware_embeddings(model_name: str = 'bert-base-uncased', overlap_p
             
             # Move inputs to the selected device.
             encoded_chunks = {key: val.to(device) for key, val in encoded_chunks.items()}
-
-            # Process all chunks in a batch using inference mode.
-            with torch.inference_mode():
-                outputs = model(**encoded_chunks)
-
             input_ids = encoded_chunks['input_ids']
+            num_chunks = input_ids.shape[0]
+            all_chunk_embeddings = []
 
-            # Calculate valid token mask.
-            valid_mask = (
-                (input_ids != tokenizer.cls_token_id) &
-                (input_ids != tokenizer.sep_token_id) &
-                (input_ids != tokenizer.pad_token_id)
-            )
+            # Process chunks in mini-batches to avoid OOM.
+            for i in range(0, num_chunks, BATCH_SIZE):
+                # Create mini-batch.
+                batch = {key: val[i:i+BATCH_SIZE] for key, val in encoded_chunks.items()}
+                with torch.inference_mode():
+                    outputs = model(**batch)
 
-            # Use CLS token embeddings from each chunk.
-            chunk_embeddings = [
-                outputs.last_hidden_state[i][0].cpu().numpy()  # CLS token embedding.
-                for i in range(input_ids.shape[0])
-                if valid_mask[i].any()  # Filter empty chunks.
-            ]
+                # Extract the CLS token embeddings for each chunk.
+                # Even though we are using padding, we use the first token for each sequence.
+                batch_embeddings = [
+                    outputs.last_hidden_state[j][0].cpu().numpy()
+                    for j in range(batch['input_ids'].shape[0])
+                ]
+                all_chunk_embeddings.extend(batch_embeddings)
 
-            # Average across chunks (no normalization).
-            file_embedding = np.mean(chunk_embeddings, axis=0) if chunk_embeddings \
-                else np.zeros(model.config.hidden_size)
-            
-            embeddings[(malware_type, filepath.name)] = file_embedding
-            logging.info(f"Generated embedding for file: {(malware_type, filepath.name)}")
+            # Average the embeddings across all chunks; if there are no chunks, return a zero vector.
+            if all_chunk_embeddings:
+                file_embedding = np.mean(all_chunk_embeddings, axis=0)
+            else:
+                file_embedding = np.zeros(model.config.hidden_size)
+
+            embeddings[(malware_type.name, filepath.name)] = file_embedding
+            logging.info(f"Generated embedding for file: {(malware_type.name, filepath.name)}")
+
+            # Optionally clear GPU cache between files.
+            torch.cuda.empty_cache()
 
     return embeddings
 

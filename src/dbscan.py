@@ -16,32 +16,36 @@ from multiprocessing import cpu_count
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import Normalizer
 from sklearn.metrics import (adjusted_rand_score, normalized_mutual_info_score,
-                             silhouette_score, homogeneity_score, completeness_score,
-                             v_measure_score)
+                            silhouette_score, homogeneity_score, completeness_score,
+                            v_measure_score)
 from sklearn.decomposition import PCA
 
 # --- Global Constants and Configuration ---
+MODEL = "distilbert"
 MALWARE_DIR = Path("../dataset/")  # Directory containing malware type folders
-SAVED_MODELS_DIR = Path("../saved_models/word2vec/")
+SAVED_MODELS_DIR = Path(f"../saved_models/{MODEL}/")
 SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # MAX_SAMPLES_PER_TYPE: you can change this if you wish to limit files per malware type.
 MAX_SAMPLES_PER_TYPE = -1  # -1 to read all files per folder
-
-EMBEDDING_SIZE = 128       # Dimension of the embeddings (vectors)
 NUM_CORES = cpu_count()
 
 # New option: if True, apply L2 normalization to embeddings before clustering/visualization.
 NORMALIZE_EMBEDDINGS: bool = True
 
+# DBSCAN Hyperparameters (Global Constants)
+DBSCAN_EPS: float = 0.01      # Epsilon value for DBSCAN
+DBSCAN_MIN_SAMPLES: int = 5  # Minimum samples per cluster for DBSCAN
+
+
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    filename=SAVED_MODELS_DIR / 'dbscan.log',  # Log file path
+    level=logging.INFO,  # Logging level: INFO and above
+    format="%(asctime)s - %(levelname)s - %(message)s",  # Format as per template
+    filemode='w'  # Override log file on each run
+)
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-fh = logging.FileHandler('dbscan.log')
-fh.setLevel(logging.DEBUG)
-logger.addHandler(fh)
 
 
 # --- Data Loading and Preprocessing ---
@@ -50,6 +54,7 @@ def load_mean_embeddings(filepath: Path) -> Dict[Any, np.ndarray]:
     logger.info("Loading embeddings from %s", filepath)
     with filepath.open("rb") as f:
         data = pickle.load(f)
+    logger.info("Loaded %d embeddings from %s", len(data), filepath)
     return data
 
 
@@ -60,7 +65,11 @@ def prepare_data(mean_embeddings: Dict[Any, np.ndarray]) -> Tuple[np.ndarray, np
     """
     embeddings: List[np.ndarray] = []
     labels: List[Any] = []
+    first: bool = True
     for (malware_type, _), vector in mean_embeddings.items():
+        if first:
+            logger.info("Embedding shape: %s", vector.shape)
+            first = False
         embeddings.append(vector)
         labels.append(malware_type)
     return np.array(embeddings), np.array(labels)
@@ -78,7 +87,7 @@ def maybe_normalize_embeddings(embeddings: np.ndarray, normalize: bool) -> np.nd
 
 
 # --- Clustering ---
-def perform_dbscan(embeddings: np.ndarray, eps: float = 0.25, min_samples: int = 5) -> np.ndarray:
+def perform_dbscan(embeddings: np.ndarray, eps: float = DBSCAN_EPS, min_samples: int = DBSCAN_MIN_SAMPLES) -> np.ndarray: # Using global constants for defaults
     """Perform DBSCAN clustering using cosine distance."""
     logger.info("Running DBSCAN (eps=%.2f, min_samples=%d, metric='cosine')", eps, min_samples)
     dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine", n_jobs=NUM_CORES)
@@ -104,15 +113,15 @@ def print_cluster_composition(true_labels: np.ndarray, cluster_labels: np.ndarra
     logger.info("Estimated number of clusters: %d", n_clusters)
     logger.info("Number of noise points: %d", n_noise)
 
-    logger.info("\nCluster composition:")
+    logger.info("Cluster composition:")
     for cluster in unique_clusters:
         cluster_mask = cluster_labels == cluster
         cluster_name = f"Cluster {cluster}" if cluster != -1 else "Noise"
         types, counts = np.unique(true_labels[cluster_mask], return_counts=True)
         type_counts = dict(zip(types, counts))
-        logger.info(f"\n{cluster_name}:")
+        logger.info(f"{cluster_name}:")
         for malware_type, count in type_counts.items():
-            logger.info(f"  {malware_type}: {count} samples")
+            logger.info(f"\t{malware_type}: {count} samples")
 
 
 # --- Dimensionality Reduction ---
@@ -124,7 +133,8 @@ def reduce_dimensions(embeddings: np.ndarray, method: str = "umap", n_components
     """
     logger.info("Reducing dimensions using %s to %d components.", method, n_components)
     if method == "umap":
-        reducer = umap.UMAP(n_components=n_components, random_state=42)
+        # Removed random_state=42 to enable potential parallelism and address UserWarning.
+        reducer = umap.UMAP(n_components=n_components) # n_jobs will now be used if set globally in UMAP
     elif method == "pca":
         reducer = PCA(n_components=n_components, random_state=42)
     else:
@@ -165,7 +175,8 @@ def plot_cluster_assignments(projected_embeddings: np.ndarray, cluster_labels: n
     plt.figure(figsize=(8, 8))
     unique_clusters = sorted([c for c in np.unique(cluster_labels) if c != -1])
     n_clusters = len(unique_clusters)
-    cmap = plt.cm.get_cmap("tab20", n_clusters)
+    # Corrected line for Matplotlib deprecation warning and TypeError:
+    cmap = plt.colormaps.get_cmap("tab20") # Removed n_clusters argument here
     # Build a mapping from cluster label to a color (normalized to [0,1]).
     cluster_color_map = {cluster: cmap(i / max(1, n_clusters - 1)) for i, cluster in enumerate(unique_clusters)}
 
@@ -181,7 +192,7 @@ def plot_cluster_assignments(projected_embeddings: np.ndarray, cluster_labels: n
         alpha=0.7,
         s=15,
     )
-    plt.title(f"DBSCAN Clustering (eps=0.25, min_samples=5)\n{n_clusters} clusters found")
+    plt.title(f"DBSCAN Clustering (eps={DBSCAN_EPS}, min_samples={DBSCAN_MIN_SAMPLES})\n{n_clusters} clusters found") # Updated title to use global constants
     plt.xlabel("Component 1")
     plt.ylabel("Component 2")
     # Build legend for clusters.
@@ -218,7 +229,7 @@ def plot_3d_visualization(embeddings: np.ndarray, true_labels: np.ndarray) -> No
     plt.show()
 
 
-def plot_pca_dbscan(embeddings: np.ndarray, eps: float = 0.25, min_samples: int = 5) -> None:
+def plot_pca_dbscan(embeddings: np.ndarray, eps: float = DBSCAN_EPS, min_samples: int = DBSCAN_MIN_SAMPLES) -> None: # Updated eps and min_samples here to use global constants
     """
     Visualize DBSCAN clustering on PCA-reduced embeddings.
     Also computes several evaluation metrics.
@@ -229,7 +240,7 @@ def plot_pca_dbscan(embeddings: np.ndarray, eps: float = 0.25, min_samples: int 
     labels = db.labels_
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     n_noise = list(labels).count(-1)
-    
+
     logger.info("PCA-DBSCAN: Estimated clusters: %d", n_clusters)
     logger.info("PCA-DBSCAN: Estimated noise points: %d", n_noise)
 
@@ -269,7 +280,7 @@ def plot_pca_dbscan(embeddings: np.ndarray, eps: float = 0.25, min_samples: int 
             markersize=6,
             alpha=0.7,
         )
-    plt.title(f"DBSCAN Clustering of Malware Embeddings\nEstimated clusters: {n_clusters} (Noise: {n_noise})")
+    plt.title(f"PCA-DBSCAN Clustering (eps={DBSCAN_EPS}, min_samples={DBSCAN_MIN_SAMPLES})\nEstimated clusters: {n_clusters} (Noise: {n_noise})") # Updated title to use global constants
     plt.xlabel("PCA Component 1")
     plt.ylabel("PCA Component 2")
     legend_handles = [
@@ -307,7 +318,7 @@ def main() -> None:
     plot_3d_visualization(processed_embeddings, true_labels)
 
     # PCA-based DBSCAN clustering visualization.
-    plot_pca_dbscan(processed_embeddings, eps=0.25, min_samples=5)
+    plot_pca_dbscan(processed_embeddings, eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES) # Updated eps and min_samples here for consistency
 
 
 if __name__ == "__main__":
