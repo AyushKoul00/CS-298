@@ -31,6 +31,7 @@ logging.basicConfig(
     filename=SAVED_MODELS_DIR / f"{BERT_MODEL_TYPE}.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
+    filemode='w'  # Override log file on each run
 )
 
 # %%
@@ -109,7 +110,7 @@ def generate_malware_embeddings(model_name: str = 'bert-base-uncased', overlap_p
         filepaths = list(curr_dir.glob('*.txt'))
 
         # Optionally limit the number of samples.
-        if max_samples > 0 and max_samples < len(filepaths):
+        if max_samples >= 0 and max_samples < len(filepaths):
             filepaths = filepaths[:max_samples]
 
         for filepath in filepaths:

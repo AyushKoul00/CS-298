@@ -1,21 +1,34 @@
+## Startup
+
+```bash
+module purge
+module load nvhpc-hpcx-cuda12/24.9
+cd /home/016950414/cs298
+source .venv/bin/activate
+cd src
+clear
+```
+
 ## TODO:
 
 ### Embedding Techniques
 
 - [x] Word2Vec
 - [x] DistilBERT
-- [ ] FastText
-- [ ] Doc2Vec
-- [ ] Op2Vec
-- [ ] 1-Hot Encodding
-- [ ] Elmo
+- [x] Bert
+- [x] FastText
+- [x] Doc2Vec
+- [ ] 1-Hot Encodding ?
+- [ ] <s>Glove</s>
+- [ ] <s>Op2Vec</s>
+- [ ] <s>Elmo</s>
 
 ### Clustering Techniques
 
-- [ ] KMeans
-- [ ] Expectation Maximization
+- [x] KMeans
+- [x] Expectation Maximization
 - [x] DBSCAN
-- [ ] Hierarchial
-- [ ] BIRCH
-- [ ] Spectral
-- [ ] OPTICS?
+- [x] Hierarchial
+- [x] BIRCH
+- [ ] Spectral ?
+- [ ] OPTICS ?
