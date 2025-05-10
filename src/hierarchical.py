@@ -32,7 +32,7 @@ from sklearn.manifold import TSNE
 import optuna
 
 # --- Global Configuration ---
-MODEL = "distilbert"
+MODEL = "word2vec"
 MALWARE_DIR = Path("../dataset/")
 SAVED_MODELS_DIR = Path(f"../saved_models/{MODEL}/")
 SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -41,7 +41,7 @@ SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR = SAVED_MODELS_DIR / "hierarchical"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FILE_NAME = "mean_embedding_per_file2.pkl"
+FILE_NAME = "mean_embedding_per_file.pkl"
 NORMALIZE_EMBEDDINGS = False  # Option to apply L2 normalization
 
 # --- Logging Setup ---
