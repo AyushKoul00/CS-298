@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 plt.style.use("seaborn-v0_8-whitegrid")
 import matplotlib.patches as mpatches
 import umap
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 from multiprocessing import cpu_count
 
@@ -32,7 +31,7 @@ from sklearn.manifold import TSNE
 import optuna
 
 # --- Global Configuration ---
-MODEL = "word2vec"
+MODEL = "fasttext"
 MALWARE_DIR = Path("../dataset/")
 SAVED_MODELS_DIR = Path(f"../saved_models/{MODEL}/")
 SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +41,7 @@ OUTPUT_DIR = SAVED_MODELS_DIR / "dbscan"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FILE_NAME = "mean_embedding_per_file.pkl"
+# FILE_NAME = "opcode_distribution_embeddings.pkl"
 NORMALIZE_EMBEDDINGS = False  # Option: apply L2 normalization to embeddings
 
 # Default DBSCAN hyperparameters (to be tuned by Optuna)
@@ -211,19 +211,32 @@ def plot_combined_3d(embeddings_3d: np.ndarray, true_labels: np.ndarray,
     plt.close()
     print(f"Saved combined 3D visualization as {filename}")
 
-# --- Optuna Objective Function ---
+# --- Optuna Objective Function using Silhouette Coefficient ---
 def objective(trial: optuna.Trial) -> float:
+    # 1) hyper‑params to tune
     eps = trial.suggest_float("eps", 0.01, 1.0, step=0.01)
     min_samples = trial.suggest_int("min_samples", 2, 20)
     normalize = trial.suggest_categorical("normalize", [True, False])
-    
+
+    # 2) load & preprocess
     data = load_mean_embeddings(SAVED_MODELS_DIR / FILE_NAME)
     embeddings, true_labels = prepare_data(data)
     processed = maybe_normalize_embeddings(embeddings, normalize)
-    
+
+    # 3) cluster
     cluster_labels = perform_dbscan(processed, eps=eps, min_samples=min_samples)
-    ari = adjusted_rand_score(true_labels, cluster_labels)
-    return ari
+
+    # 4) compute silhouette (must have ≥2 clusters + enough points)
+    #    remove noise points (label == -1) for scoring
+    mask = cluster_labels != -1
+    labels_no_noise = cluster_labels[mask]
+
+    # if less than 2 clusters after removing noise, silhouette is undefined:
+    if len(set(labels_no_noise)) < 2:
+        return -1.0
+
+    score = silhouette_score(processed[mask], labels_no_noise)
+    return score
 
 # --- Main Execution ---
 def main() -> None:

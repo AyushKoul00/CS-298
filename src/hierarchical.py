@@ -32,7 +32,7 @@ from sklearn.manifold import TSNE
 import optuna
 
 # --- Global Configuration ---
-MODEL = "word2vec"
+MODEL = "fasttext"
 MALWARE_DIR = Path("../dataset/")
 SAVED_MODELS_DIR = Path(f"../saved_models/{MODEL}/")
 SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +42,7 @@ OUTPUT_DIR = SAVED_MODELS_DIR / "hierarchical"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FILE_NAME = "mean_embedding_per_file.pkl"
+# FILE_NAME = "opcode_distribution_embeddings.pkl"
 NORMALIZE_EMBEDDINGS = False  # Option to apply L2 normalization
 
 # --- Logging Setup ---
@@ -214,8 +215,16 @@ def objective(trial: optuna.Trial) -> float:
     processed = maybe_normalize_embeddings(embeddings, normalize)
     
     cluster_labels = perform_hierarchical(processed, n_clusters=n_clusters, linkage=linkage)
-    ari = adjusted_rand_score(true_labels, cluster_labels)
-    return ari
+    
+    mask = cluster_labels != -1
+    labels_no_noise = cluster_labels[mask]
+
+    # if less than 2 clusters after removing noise, silhouette is undefined:
+    if len(set(labels_no_noise)) < 2:
+        return -1.0
+
+    score = silhouette_score(processed[mask], labels_no_noise)
+    return score
 
 # --- Main Execution ---
 def main() -> None:

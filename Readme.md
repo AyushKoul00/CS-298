@@ -1,6 +1,10 @@
 ## Startup
 
 ```bash
+ssh ember-gh1
+```
+
+```bash
 module purge
 module load nvhpc-hpcx-cuda12/24.9
 cd /home/016950414/cs298

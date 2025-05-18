@@ -139,7 +139,7 @@ cython_debug/
 *.pyo
 
 # Ignore pipenv virtual environment
-/.venv
+/.venv*
 
 # Project specific
 *.tar.gz
