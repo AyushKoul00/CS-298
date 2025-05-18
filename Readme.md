@@ -22,7 +22,7 @@ clear
 - [x] Bert
 - [x] FastText
 - [x] Doc2Vec
-- [ ] 1-Hot Encodding ?
+- [X] 1-Hot Encodding ?
 - [ ] <s>Glove</s>
 - [ ] <s>Op2Vec</s>
 - [ ] <s>Elmo</s>
@@ -34,5 +34,3 @@ clear
 - [x] DBSCAN
 - [x] Hierarchial
 - [x] BIRCH
-- [ ] Spectral ?
-- [ ] OPTICS ?
